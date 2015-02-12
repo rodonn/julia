@@ -246,7 +246,7 @@ end
 eachmatch(re::Regex, str::AbstractString) = RegexMatchIterator(re,str)
 
 # Don't serialize the pointers
-function serialize(s, r::Regex)
+function serialize(s::Serializer, r::Regex)
     serialize_type(s, typeof(r))
     serialize(s, r.pattern)
     serialize(s, r.options)
