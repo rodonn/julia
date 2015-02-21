@@ -65,9 +65,7 @@ end
 
 # cycle handling
 function serialize_cycle(s::Serializer, x)
-    if !isdefined(s,:table)
-        s.table = ObjectIdDict()
-    end
+    isimmutable(x) && return false
     offs = get(s.table, x, -1)
     if offs != -1
         writetag(s.io, BackrefTag)
@@ -347,9 +345,7 @@ function serialize(s::Serializer, x)
         serialize_type(s, t)
         write(s.io, x)
     else
-        if !isimmutable(x)
-            serialize_cycle(s, x) && return
-        end
+        serialize_cycle(s, x) && return
         serialize_type(s, t)
         for i in 1:nf
             if isdefined(x, i)
@@ -370,18 +366,17 @@ function deserialize(s::Serializer)
 end
 
 function deserialize_cycle(s::Serializer, x)
-    if !isdefined(s, :table)
-        s.table = ObjectIdDict()
+    if !isimmutable(x)
+        s.table[s.counter] = x
+        s.counter += 1
     end
-    s.table[s.counter] = x
-    s.counter += 1
     nothing
 end
 
 # deserialize_ is an internal function to dispatch on the tag
 # describing the serialized representation. the number of
 # representations is fixed, so deserialize_ does not get extended.
-function handle_deserialize(s, b)
+function handle_deserialize(s::Serializer, b)
     if b == 0
         return deser_tag[Int32(read(s.io, UInt8))]
     end
@@ -401,12 +396,12 @@ function handle_deserialize(s, b)
     return deserialize(s, tag)
 end
 
-deserialize_tuple(s, len) = ntuple(len, i->deserialize(s))
+deserialize_tuple(s::Serializer, len) = ntuple(len, i->deserialize(s))
 
-deserialize(s, ::Type{Symbol}) = symbol(read(s.io, UInt8, Int32(read(s.io, UInt8))))
-deserialize(s, ::Type{LongSymbol}) = symbol(read(s.io, UInt8, read(s.io, Int32)))
+deserialize(s::Serializer, ::Type{Symbol}) = symbol(read(s.io, UInt8, Int32(read(s.io, UInt8))))
+deserialize(s::Serializer, ::Type{LongSymbol}) = symbol(read(s.io, UInt8, read(s.io, Int32)))
 
-function deserialize(s, ::Type{Module})
+function deserialize(s::Serializer, ::Type{Module})
     path = deserialize(s)
     m = Main
     if isa(path,Tuple) && path !== ()
@@ -432,7 +427,7 @@ end
 
 const known_lambda_data = Dict()
 
-function deserialize(s, ::Type{Function})
+function deserialize(s::Serializer, ::Type{Function})
     b = read(s.io, UInt8)
     if b==0
         name = deserialize(s)::Symbol
@@ -458,7 +453,7 @@ function deserialize(s, ::Type{Function})
     return f
 end
 
-function deserialize(s, ::Type{LambdaStaticData})
+function deserialize(s::Serializer, ::Type{LambdaStaticData})
     lnumber = deserialize(s)
     if haskey(known_lambda_data, lnumber)
         linfo = known_lambda_data[lnumber]::LambdaStaticData
@@ -488,7 +483,7 @@ function deserialize(s, ::Type{LambdaStaticData})
     return linfo
 end
 
-function deserialize(s, ::Type{Array})
+function deserialize(s::Serializer, ::Type{Array})
     d1 = deserialize(s)
     if isa(d1,Type)
         elty = d1
@@ -537,10 +532,10 @@ function deserialize(s, ::Type{Array})
     return A
 end
 
-deserialize(s, ::Type{Expr})     = deserialize_expr(s, Int32(read(s.io, UInt8)))
-deserialize(s, ::Type{LongExpr}) = deserialize_expr(s, read(s.io, Int32))
+deserialize(s::Serializer, ::Type{Expr})     = deserialize_expr(s, Int32(read(s.io, UInt8)))
+deserialize(s::Serializer, ::Type{LongExpr}) = deserialize_expr(s, read(s.io, Int32))
 
-function deserialize_expr(s, len)
+function deserialize_expr(s::Serializer, len)
     hd = deserialize(s)::Symbol
     ty = deserialize(s)
     e = Expr(hd)
@@ -550,12 +545,12 @@ function deserialize_expr(s, len)
     e
 end
 
-function deserialize(s, ::Type{UnionType})
+function deserialize(s::Serializer, ::Type{UnionType})
     types = deserialize(s)
     Union(types...)
 end
 
-function deserialize(s, ::Type{DataType})
+function deserialize(s::Serializer, ::Type{DataType})
     form = read(s.io, UInt8)
     name = deserialize(s)::Symbol
     mod = deserialize(s)::Module
@@ -579,9 +574,9 @@ function deserialize(s, ::Type{DataType})
     deserialize(s, t)
 end
 
-deserialize{T}(s, ::Type{Ptr{T}}) = convert(Ptr{T}, 0)
+deserialize{T}(s::Serializer, ::Type{Ptr{T}}) = convert(Ptr{T}, 0)
 
-function deserialize(s, ::Type{Task})
+function deserialize(s::Serializer, ::Type{Task})
     t = Task(()->nothing)
     deserialize_cycle(s, t)
     t.code = deserialize(s)
@@ -593,7 +588,7 @@ function deserialize(s, ::Type{Task})
 end
 
 # default DataType deserializer
-function deserialize(s, t::DataType)
+function deserialize(s::Serializer, t::DataType)
     nf = nfields(t)
     if nf == 0 && t.size > 0
         # bits type
